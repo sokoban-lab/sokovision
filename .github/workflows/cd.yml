@@ -96,24 +96,31 @@ jobs:
           key: windows-x86_64
 
       - name: Build release binaries
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+        run: cargo build --release --locked --workspace --target x86_64-pc-windows-msvc
 
-      - name: Package release archive
+      - name: Package release archives
         shell: bash
         env:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          name="sokovision-${VERSION}-windows-x86_64"
-          stage="${RUNNER_TEMP:?}/${name}"
-          mkdir -p "${stage}" dist
+          mkdir -p dist
 
-          cp "target/x86_64-pc-windows-msvc/release/sokovision-gui.exe" "${stage}/"
-          cp "target/x86_64-pc-windows-msvc/release/sokovision.exe" "${stage}/"
+          for pkg in cli gui; do
+            if [[ "$pkg" == "cli" ]]; then
+              bin="sokovision.exe"
+            else
+              bin="sokovision-gui.exe"
+            fi
+            name="sokovision-${pkg}-${VERSION}-windows-x86_64"
+            stage="${RUNNER_TEMP:?}/${name}"
+            rm -rf "${stage}"
+            mkdir -p "${stage}"
+            cp "target/x86_64-pc-windows-msvc/release/${bin}" "${stage}/"
+            7z a -tzip "dist/${name}.zip" "${stage}" > /dev/null
+          done
 
-          7z a -tzip "dist/${name}.zip" "${stage}" > /dev/null
-
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: sokovision-windows-x86_64
@@ -121,8 +128,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  build-linux-cli:
-    name: Build (linux-x86_64, CLI)
+  build-linux:
+    name: Build (linux-x86_64)
     needs: meta
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -134,6 +141,20 @@ jobs:
           ref: ${{ needs.meta.outputs.ref }}
           persist-credentials: false
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libdbus-1-dev \
+            libegl-dev \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libxcb-randr0-dev \
+            libxcb-shm0-dev \
+            libxkbcommon-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -142,36 +163,45 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          key: linux-x86_64-cli
+          key: linux-x86_64
 
-      - name: Build release binary
-        run: cargo build --release --locked -p sokovision-cli --target x86_64-unknown-linux-gnu
+      - name: Build release binaries
+        run: cargo build --release --locked --workspace --target x86_64-unknown-linux-gnu
 
-      - name: Package release archive
+      - name: Package release archives
         shell: bash
         env:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          name="sokovision-cli-${VERSION}-linux-x86_64"
-          stage="${RUNNER_TEMP:?}/${name}"
-          mkdir -p "${stage}" dist
+          mkdir -p dist
 
-          cp "target/x86_64-unknown-linux-gnu/release/sokovision" "${stage}/"
-          chmod +x "${stage}/sokovision"
-          tar -czf "dist/${name}.tar.gz" -C "${RUNNER_TEMP}" "${name}"
+          for pkg in cli gui; do
+            if [[ "$pkg" == "cli" ]]; then
+              bin="sokovision"
+            else
+              bin="sokovision-gui"
+            fi
+            name="sokovision-${pkg}-${VERSION}-linux-x86_64"
+            stage="${RUNNER_TEMP:?}/${name}"
+            rm -rf "${stage}"
+            mkdir -p "${stage}"
+            cp "target/x86_64-unknown-linux-gnu/release/${bin}" "${stage}/"
+            chmod +x "${stage}/${bin}"
+            tar -czf "dist/${name}.tar.gz" -C "${RUNNER_TEMP}" "${name}"
+          done
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: sokovision-cli-linux-x86_64
+          name: sokovision-linux-x86_64
           path: dist/*
           if-no-files-found: error
           retention-days: 7
 
   release:
     name: Publish release
-    needs: [meta, build-windows, build-linux-cli]
+    needs: [meta, build-windows, build-linux]
     if: needs.meta.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -211,7 +241,11 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          assets=(dist/sokovision-*.zip dist/sokovision-cli-*.tar.gz)
+          assets=(dist/sokovision-*.zip dist/sokovision-*.tar.gz)
+          if [[ "${#assets[@]}" -ne 4 ]]; then
+            echo "expected 4 release archives, found ${#assets[@]}: ${assets[*]}" >&2
+            exit 1
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "$VERSION Release" --notes-file release-notes.md
             gh release upload "$TAG" "${assets[@]}" --clobber
