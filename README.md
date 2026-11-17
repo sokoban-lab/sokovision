@@ -2,7 +2,7 @@
 
 Recognize [Sokoban] boards from screenshots and export them to [XSB] format.
 
-![Screenshot](docs/screenshot.png)
+<p align="center"><img src="docs/screenshot.png" alt="Screenshot" width="80%"></p>
 
 ## Features
 
