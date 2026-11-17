@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["sokovision-core", "sokovision-cli", "sokovision-gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+image = { version = "0.25.10", default-features = false, features = [
+    "webp",
+    "png",
+    "jpeg",
+    "bmp",
+] }
+serde = { version = "1", features = ["derive"] }
+soukoban = { git = "https://github.com/ShenMian/soukoban", rev = "14e4c597b0f570e0f56b853722de657408d765fa" }
+thiserror = "2"
