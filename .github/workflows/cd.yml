@@ -146,13 +146,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
-            libdbus-1-dev \
+            libclang-dev \
+            libdrm-dev \
             libegl-dev \
             libfontconfig1-dev \
+            libgbm-dev \
+            libpipewire-0.3-dev \
+            libspa-0.2-dev \
             libwayland-dev \
             libxcb1-dev \
             libxcb-randr0-dev \
+            libxcb-render0-dev \
             libxcb-shm0-dev \
+            libxcb-xfixes0-dev \
             libxkbcommon-dev
 
       - name: Install Rust toolchain

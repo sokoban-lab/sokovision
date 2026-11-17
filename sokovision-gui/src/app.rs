@@ -1260,20 +1260,29 @@ impl Drop for App {
 }
 
 fn capture_screen() -> Result<image::RgbaImage, String> {
-    let screens =
-        screenshots::Screen::all().map_err(|error| tr!("screen_info_failed", error = error))?;
-    if screens.is_empty() {
+    let monitors =
+        xcap::Monitor::all().map_err(|error| tr!("screen_info_failed", error = error))?;
+    if monitors.is_empty() {
         return Err(tr!("no_display"));
     }
-    let mut captures = Vec::with_capacity(screens.len());
-    for screen in screens {
-        let info = screen.display_info;
-        let raw = screen
-            .capture()
+    let mut captures = Vec::with_capacity(monitors.len());
+    for monitor in monitors {
+        let x = monitor
+            .x()
+            .map_err(|error| tr!("screen_info_failed", error = error))?;
+        let y = monitor
+            .y()
+            .map_err(|error| tr!("screen_info_failed", error = error))?;
+        let width = monitor
+            .width()
+            .map_err(|error| tr!("screen_info_failed", error = error))?;
+        let height = monitor
+            .height()
+            .map_err(|error| tr!("screen_info_failed", error = error))?;
+        let rgba = monitor
+            .capture_image()
             .map_err(|error| tr!("capture_failed", error = error))?;
-        let rgba = image::RgbaImage::from_raw(raw.width(), raw.height(), raw.into_raw())
-            .ok_or_else(|| tr!("invalid_capture"))?;
-        captures.push((info.x, info.y, info.width, info.height, rgba));
+        captures.push((x, y, width, height, rgba));
     }
     stitch_monitors(captures)
 }
