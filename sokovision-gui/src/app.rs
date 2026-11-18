@@ -102,11 +102,9 @@ pub(crate) struct App {
     /// [`GRID_SETTLE_DELAY`]; reading it per frame is what made a drag stutter.
     grid_settle_at: Option<f64>,
     pub grid_drag: Option<Handle>,
-    /// Outline part the current primary press started on, plus the offset from
-    /// the pointer to that edge in image pixels. A drag moves the edge by the
-    /// pointer delta, so grabbing a handle slightly off its line does not
-    /// shift the whole grid.
-    pub grid_press: Option<(Handle, Vec2)>,
+    /// Grabbed outline part, pointer-to-handle offset in image pixels, screen
+    /// position where the press started, and the initial grid before resizing.
+    pub grid_press: Option<(Handle, Vec2, egui::Pos2, Grid)>,
     pub region: Option<PixelRect>,
     /// Rubber band the user is drawing to create a grid, in image coordinates.
     /// Used while there is no grid: detection found nothing, or the toolbar
@@ -1036,6 +1034,7 @@ impl App {
     /// Paints a cell from a canvas click or drag, recording at most one undo
     /// step per stroke and skipping repeated frames on the same cell.
     pub(crate) fn paint_from_canvas(&mut self, row: usize, column: usize, dragging: bool) {
+        self.cancel_grid_search();
         if dragging && self.last_drag_painted == Some((row, column)) {
             return;
         }
@@ -1097,6 +1096,7 @@ impl App {
     /// Applies an alternative candidate picked in the inspector to `(row, column)`,
     /// recording undo history and adopting the chosen symbol in the palette.
     pub fn apply_cell_choice(&mut self, row: usize, column: usize, choice: Cell) {
+        self.cancel_grid_search();
         self.settle_grid_now();
         self.paint_cell = choice;
         if self.would_change_on_paint(row, column) {
@@ -1122,6 +1122,9 @@ impl App {
         }
         grid.origin_x = origin_x;
         grid.origin_y = origin_y;
+        let Some(grid) = self.clamp_grid(grid) else {
+            return false;
+        };
         self.grid_edit = Some(grid);
         self.apply_grid_live(ctx, false);
         true
@@ -2601,6 +2604,86 @@ mod tests {
         let imported = &app.image.as_ref().expect("cropped image").rgba;
         assert_eq!((imported.width(), imported.height()), (160, 120));
         assert_eq!(imported.get_pixel(0, 0).0, [90, 140, 210, 255]);
+    }
+
+    #[test]
+    fn dragging_handle_to_image_border_does_not_shift_opposite_edge_or_drop_columns() {
+        let ctx = egui::Context::default();
+        // 360x270 fills the 800x600 canvas cleanly (scale = 20/9) and triggers
+        // IEEE-754 ULP overshoot at 14 columns (`360.0_f32 / 14.0 * 14.0 > 360.0`).
+        let rgba = image::RgbaImage::from_pixel(360, 270, image::Rgba([20, 20, 20, 255]));
+        let color = egui::ColorImage::from_rgba_unmultiplied([360, 270], rgba.as_raw());
+        let texture = ctx.load_texture("source", color, TextureOptions::LINEAR);
+        let mut app = App::base(SkinLibrary::default(), None, false);
+        app.image = Some(LoadedImage {
+            rgba: Arc::new(rgba),
+            texture,
+        });
+        let scale = 800.0 / 360.0;
+
+        // 1) Grabbing the right edge 4 screen px inside (`grab.x > 0`) and
+        //    dragging to the right border must keep `origin_x` fixed at 20.0.
+        let initial = Grid::new(20.0, 30.0, 20.0, 20.0, 8, 14);
+        app.recognize_with(Some(initial), None, History::Keep);
+        let right_screen = (20.0 + 280.0) * scale;
+        let mid_y_screen = (30.0 + 80.0) * scale;
+        play_drag(
+            &ctx,
+            &mut app,
+            egui::pos2(right_screen - 4.0, mid_y_screen),
+            egui::pos2(800.0, mid_y_screen),
+        );
+        let after_right = app.grid_edit.expect("grid");
+        assert!(
+            (after_right.origin_x - 20.0).abs() < 1e-3,
+            "left edge must not shift when right edge hits image border: {after_right:?}"
+        );
+        assert_eq!(after_right.columns, 14);
+        assert!((after_right.origin_x + after_right.width() - 360.0).abs() < 1e-2);
+
+        // 2) Full-width 14-column grid (`0..360`): dragging TopRight upward at
+        //    the right border must keep all 14 columns instead of truncating to 13.
+        let full_width = Grid::new(0.0, 40.0, 360.0 / 14.0, 20.0, 8, 14)
+            .clamp_to_image(360, 270)
+            .expect("clamped");
+        app.recognize_with(Some(full_width), None, History::Keep);
+        let top_screen = 40.0 * scale;
+        play_drag_at(
+            &ctx,
+            &mut app,
+            1.0,
+            egui::pos2(800.0 - 4.0, top_screen + 3.0),
+            egui::pos2(800.0, top_screen - 20.0),
+        );
+        let after_corner = app.grid_edit.expect("grid");
+        assert_eq!(after_corner.columns, 14, "{after_corner:?}");
+        assert!((after_corner.origin_x - 0.0).abs() < 1e-3);
+        assert!((after_corner.width() - 360.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn small_handle_drag_below_egui_slop_moves_edge_without_painting() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_flat_image(&ctx);
+        app.create_grid_in(&ctx, PixelRect::new(20, 10, 240, 200));
+        app.cancel_grid_search();
+        let before = app.grid_edit.expect("grid");
+
+        // 3.0 screen px (< egui's 6 px drag threshold) == 1.2 image px at 2.5x.
+        let left_x = before.origin_x * 2.5;
+        let mid_y = (before.origin_y + before.height() * 0.5) * 2.5;
+        play_drag(
+            &ctx,
+            &mut app,
+            egui::pos2(left_x, mid_y),
+            egui::pos2(left_x + 3.0, mid_y),
+        );
+
+        let after = app.grid_edit.expect("grid");
+        assert!(
+            (after.origin_x - (before.origin_x + 1.2)).abs() < 0.05,
+            "fine 3 px handle drag moves left edge smoothly: {before:?} -> {after:?}"
+        );
     }
 
     fn play_click_at(ctx: &egui::Context, app: &mut App, time: f64, pos: egui::Pos2) {

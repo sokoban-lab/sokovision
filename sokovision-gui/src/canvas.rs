@@ -120,9 +120,15 @@ impl View {
         }
     }
 
+    /// Unclamped image coordinates under a screen position.
+    fn to_image_unclamped(self, pointer: Pos2) -> Pos2 {
+        let position = (pointer - self.image_rect.min) / self.scale;
+        pos2(position.x, position.y)
+    }
+
     /// Image position under a screen position, clamped to the image.
     fn to_image(self, pointer: Pos2) -> Pos2 {
-        let position = (pointer - self.image_rect.min) / self.scale;
+        let position = self.to_image_unclamped(pointer);
         pos2(
             position.x.clamp(0.0, self.image_size.x),
             position.y.clamp(0.0, self.image_size.y),
@@ -635,36 +641,47 @@ impl App {
         overlay: Option<Grid>,
         view: View,
     ) {
+        /// Screen-pixel movement on a grabbed handle that starts resizing right
+        /// away (finer than egui's ~6 px drag slop, while leaving 0 px clicks to
+        /// paint border cells).
+        const HANDLE_DRAG_THRESHOLD: f32 = 1.5;
+
         // Hit test where the press started: by the time egui reports a drag the
         // pointer has already left the small handle, which used to fall through
-        // to painting the cell underneath. The grab offset is kept so the edge
-        // moves with the pointer instead of jumping onto it.
+        // to painting the cell underneath. The grab offset uses unclamped image
+        // coordinates so grabbing the outer half of a border handle stays exact.
         if ctx.input(|input| input.pointer.primary_pressed()) {
             self.grid_press = response.interact_pointer_pos().and_then(|pointer| {
                 let grid = overlay?;
                 let handle = grid::handle_at(&grid, pointer, view.image_rect, view.scale)?;
-                let grab = grid::handle_position(&grid, handle) - view.to_image(pointer);
-                Some((handle, grab))
+                let grab = grid::handle_position(&grid, handle) - view.to_image_unclamped(pointer);
+                Some((handle, grab, pointer, grid))
             });
             // A hand on the outline is already an explicit statement of
-            // intent, before egui has reported a drag: a scan result landing
-            // in between would otherwise pull the grid out from under the
-            // pointer and the drag would continue on the bounced outline.
+            // intent, before egui has reported a drag: a scan or pending settle
+            // landing in between would otherwise pull the grid out from under
+            // the pointer and the drag would continue on the bounced outline.
             if self.grid_press.is_some() {
                 self.cancel_grid_search();
+                self.cancel_grid_settle();
             }
         }
-        if response.drag_started_by(PointerButton::Primary)
-            && let Some((handle, _)) = self.grid_press
+        if self.grid_drag.is_none()
+            && let Some((handle, _, press_pos, _)) = self.grid_press
         {
-            self.grid_drag = Some(handle);
-            // The release reads the dragged grid itself; a waiting stepper read
-            // must not run against the intermediate outline.
-            self.cancel_grid_settle();
+            let moved = response
+                .interact_pointer_pos()
+                .is_some_and(|pointer| pointer.distance(press_pos) >= HANDLE_DRAG_THRESHOLD);
+            if response.drag_started_by(PointerButton::Primary)
+                || (ctx.input(|input| input.pointer.primary_down()) && moved)
+            {
+                self.grid_drag = Some(handle);
+                self.cancel_grid_settle();
+            }
         }
 
         if let Some(handle) = self.grid_drag {
-            self.drag_handle(response, handle, view);
+            self.drag_handle(ctx, response, handle, view);
             return;
         }
 
@@ -690,18 +707,32 @@ impl App {
         }
     }
 
-    fn drag_handle(&mut self, response: &egui::Response, handle: grid::Handle, view: View) {
-        let stopped = response.drag_stopped_by(PointerButton::Primary);
-        // The release frame still reports where the button came up, so a quick
-        // flick ends on the released position instead of the previous frame's.
-        if (response.dragged_by(PointerButton::Primary) || stopped)
-            && let Some(pointer) = response.interact_pointer_pos()
-            && let Some(grid) = self.grid_edit
+    fn drag_handle(
+        &mut self,
+        ctx: &egui::Context,
+        response: &egui::Response,
+        handle: grid::Handle,
+        view: View,
+    ) {
+        let primary_down = ctx.input(|input| input.pointer.primary_down());
+        let stopped = response.drag_stopped_by(PointerButton::Primary) || !primary_down;
+        let pointer = response
+            .interact_pointer_pos()
+            .or_else(|| ctx.input(|input| input.pointer.interact_pos()));
+        // Compute from the original `start_grid` and clamp the target handle
+        // position to `[0, image_size]` *before* resizing, so releasing near an
+        // image border never shifts the opposite edge or drops a row/column.
+        if (primary_down || stopped)
+            && let Some(pointer) = pointer
+            && let Some((_, grab, _, start_grid)) = self.grid_press
         {
             self.cancel_grid_search();
-            let grab = self.grid_press.map_or(Vec2::ZERO, |(_, grab)| grab);
-            let position = view.to_image(pointer) + grab;
-            self.grid_edit = Some(grid::resize(grid, handle, position));
+            let raw = view.to_image_unclamped(pointer) + grab;
+            let position = pos2(
+                raw.x.clamp(0.0, view.image_size.x),
+                raw.y.clamp(0.0, view.image_size.y),
+            );
+            self.grid_edit = Some(grid::resize(start_grid, handle, position));
         }
         if !stopped {
             return;
@@ -710,6 +741,7 @@ impl App {
         self.grid_drag = None;
         self.grid_press = None;
         let Some(grid) = self.grid_edit.and_then(|grid| self.clamp_grid(grid)) else {
+            self.grid_edit = self.result.as_ref().map(|result| result.grid);
             return;
         };
         // A hand-resized outline is an explicit statement of intent: read the

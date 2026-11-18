@@ -161,7 +161,9 @@ impl Grid {
     }
 
     /// Fits the grid into the image by clamping the origin and dropping rows or
-    /// columns that would fall past the right or bottom edge.
+    /// columns that would fall past the right or bottom edge, without letting
+    /// IEEE-754 `f32` rounding at the image border drop a row/column or shift
+    /// the origin.
     pub fn clamp_to_image(mut self, image_width: u32, image_height: u32) -> Option<Self> {
         if image_width == 0 || image_height == 0 {
             return None;
@@ -169,14 +171,41 @@ impl Grid {
         self.validate_shape().ok()?;
 
         let (width, height) = (image_width as f32, image_height as f32);
-        self.origin_x = self.origin_x.clamp(0.0, (width - self.width()).max(0.0));
-        self.origin_y = self.origin_y.clamp(0.0, (height - self.height()).max(0.0));
-        self.columns = self
-            .columns
-            .min(fit_count(width - self.origin_x, self.cell_width));
-        self.rows = self
-            .rows
-            .min(fit_count(height - self.origin_y, self.cell_height));
+
+        if self.origin_x < 0.0 {
+            self.origin_x = 0.0;
+        } else if self.origin_x + self.width() > width + BOUNDARY_EPSILON {
+            self.origin_x = (width - self.width()).max(0.0);
+        }
+        while self.cell_width > 2.0
+            && self.origin_x + self.width() > width
+            && self.origin_x + self.width() <= width + BOUNDARY_EPSILON
+        {
+            self.cell_width = self.cell_width.next_down();
+        }
+        if self.origin_x + self.width() > width {
+            self.columns = self
+                .columns
+                .min(fit_count(width - self.origin_x, self.cell_width));
+        }
+
+        if self.origin_y < 0.0 {
+            self.origin_y = 0.0;
+        } else if self.origin_y + self.height() > height + BOUNDARY_EPSILON {
+            self.origin_y = (height - self.height()).max(0.0);
+        }
+        while self.cell_height > 2.0
+            && self.origin_y + self.height() > height
+            && self.origin_y + self.height() <= height + BOUNDARY_EPSILON
+        {
+            self.cell_height = self.cell_height.next_down();
+        }
+        if self.origin_y + self.height() > height {
+            self.rows = self
+                .rows
+                .min(fit_count(height - self.origin_y, self.cell_height));
+        }
+
         self.validate(image_width, image_height).ok()?;
         Some(self)
     }
@@ -222,9 +251,13 @@ impl Grid {
     }
 }
 
+/// Sub-pixel tolerance absorbed at the right and bottom image borders so float
+/// division rounding `(span / count) * count > span` never truncates a cell.
+const BOUNDARY_EPSILON: f32 = 1e-2;
+
 /// How many whole cells of `pitch` fit into `extent`, but never zero.
 fn fit_count(extent: f32, pitch: f32) -> u32 {
-    ((extent / pitch).floor() as u32).max(1)
+    (((extent + BOUNDARY_EPSILON) / pitch).floor() as u32).max(1)
 }
 
 /// The up, down, left and right neighbours of a cell that stay on the board.
@@ -329,5 +362,24 @@ mod tests {
             huge.iter()
                 .all(|grid| grid.rows <= MAX_BOARD_AXIS && grid.columns <= MAX_BOARD_AXIS)
         );
+    }
+
+    #[test]
+    fn clamp_to_image_preserves_full_width_counts_and_origin_against_float_rounding() {
+        let full = Grid::new(0.0, 200.0, (1080.0_f32 / 14.0).next_up(), 64.0, 12, 14);
+        assert!(full.width() > 1080.0, "1-ULP overshoot at right border");
+
+        let clamped = full
+            .clamp_to_image(1080, 2400)
+            .expect("valid full-width grid");
+        assert_eq!((clamped.rows, clamped.columns), (12, 14));
+        assert_eq!((clamped.origin_x, clamped.origin_y), (0.0, 200.0));
+        assert!((clamped.width() - 1080.0).abs() < 1e-2);
+
+        // Likewise when `origin_x > 0` and `origin_x + width` touches the right edge.
+        let flush_right = Grid::new(101.0, 50.0, (979.0_f32 / 14.0).next_up(), 40.0, 10, 14);
+        let clamped_right = flush_right.clamp_to_image(1080, 800).expect("valid");
+        assert_eq!(clamped_right.origin_x, 101.0);
+        assert_eq!(clamped_right.columns, 14);
     }
 }
