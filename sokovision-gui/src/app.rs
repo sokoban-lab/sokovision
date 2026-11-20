@@ -52,6 +52,14 @@ struct GridSearch {
 /// whole board is far too slow to run at frame rate.
 const GRID_SETTLE_DELAY: f64 = 0.5;
 
+/// Screenshot texels stay sharp when the board is zoomed in; linear filtering
+/// still smooths the image on the way down to fit the canvas.
+const PIXEL_TEXTURE: TextureOptions = TextureOptions {
+    magnification: egui::TextureFilter::Nearest,
+    minification: egui::TextureFilter::Linear,
+    ..TextureOptions::LINEAR
+};
+
 /// What the side panel shows about the current board. Building these walks the
 /// whole board and re-parses the level, so they are kept until the board or the
 /// trim choice changes instead of being rebuilt on every repaint.
@@ -220,7 +228,7 @@ impl App {
             [rgba.width() as usize, rgba.height() as usize],
             rgba.as_raw(),
         );
-        let texture = ctx.load_texture("source", color_image, TextureOptions::LINEAR);
+        let texture = ctx.load_texture("source", color_image, PIXEL_TEXTURE);
         self.capture_crop = None;
         self.image = Some(LoadedImage {
             rgba: Arc::new(rgba),
@@ -758,7 +766,7 @@ impl App {
             [rgba.width() as usize, rgba.height() as usize],
             rgba.as_raw(),
         );
-        let texture = ctx.load_texture("capture_preview", color_image, TextureOptions::LINEAR);
+        let texture = ctx.load_texture("capture_preview", color_image, PIXEL_TEXTURE);
         self.capture_crop = Some(CaptureCrop {
             rgba,
             texture,
@@ -1379,7 +1387,7 @@ mod tests {
             [rgba.width() as usize, rgba.height() as usize],
             rgba.as_raw(),
         );
-        let texture = ctx.load_texture("source", color, TextureOptions::LINEAR);
+        let texture = ctx.load_texture("source", color, PIXEL_TEXTURE);
         let mut app = App::base(SkinLibrary::default(), None, false);
         app.image = Some(LoadedImage {
             rgba: Arc::new(rgba),
@@ -1709,18 +1717,28 @@ mod tests {
         output.textures_delta.clear();
 
         // The added row is the one the stale read has no cells for. The 120x72
-        // image sits at (0, 60) in the 800x600 canvas at a 20/3 scale, so the
-        // row spans y 420..540 and the first cell x 0..160.
-        let cell = egui::Rect::from_min_max(egui::pos2(0.0, 420.0), egui::pos2(160.0, 540.0));
-        let bordered = output.shapes.iter().any(|clipped| match &clipped.shape {
-            egui::Shape::Rect(rect) => {
-                rect.stroke.width > 0.0
-                    && (rect.rect.min - cell.min).length() < 1.0
-                    && (rect.rect.max - cell.max).length() < 1.0
+        // image sits at (0, 60) in the 800x600 canvas, so the four clamped rows
+        // put a grid line at y 420 spanning the image.
+        let lined = output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::Shape::LineSegment { points, .. } => {
+                (points[0].y - 420.0).abs() < 0.5
+                    && (points[1].y - 420.0).abs() < 0.5
+                    && (points[0].x - points[1].x).abs() > 700.0
             }
             _ => false,
         });
-        assert!(bordered, "the added row still shows its cell border");
+        assert!(lined, "the added row still shows its grid line");
+
+        // Lines are shared edges, not a stroke repeated on both neighbouring
+        // cells; otherwise the seam would be drawn twice and look dirty.
+        let cell = egui::Rect::from_min_max(egui::pos2(0.0, 420.0), egui::pos2(160.0, 540.0));
+        assert!(
+            !output.shapes.iter().any(|clipped| matches!(&clipped.shape,
+                egui::Shape::Rect(rect) if rect.stroke.width > 0.0
+                    && (rect.rect.min - cell.min).length() < 1.0
+                    && (rect.rect.max - cell.max).length() < 1.0)),
+            "the grid is not stroked once per cell"
+        );
 
         let first = egui::Rect::from_min_max(egui::pos2(0.0, 60.0), egui::pos2(160.0, 180.0));
         let tinted = output.shapes.iter().any(|clipped| match &clipped.shape {
@@ -1732,6 +1750,38 @@ mod tests {
             _ => false,
         });
         assert!(!tinted, "the stale tint is hidden while the grid settles");
+    }
+
+    /// Screenshot pixels stay crisp in, the outside of the board gets the
+    /// spotlight treatment, and the dimming never lands on the board itself.
+    #[test]
+    fn the_board_is_spotlit_and_its_texture_stays_pixel_sharp() {
+        assert_eq!(PIXEL_TEXTURE.magnification, egui::TextureFilter::Nearest);
+        assert_eq!(PIXEL_TEXTURE.minification, egui::TextureFilter::Linear);
+
+        let ctx = egui::Context::default();
+        let mut app = app_with_flat_image(&ctx);
+        app.create_grid_in(&ctx, PixelRect::new(20, 10, 240, 200));
+        app.cancel_grid_search();
+        let mut output = ctx.run_ui(input_at(0.0, Vec::new()), |ui| app.draw_canvas(ui, &ctx));
+        output.textures_delta.clear();
+
+        let shade = egui::Color32::from_black_alpha(90);
+        let bands: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill == shade => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bands.len(), 4, "four bands shade the area around the board");
+        assert!(
+            !bands
+                .iter()
+                .any(|band| band.contains(egui::pos2(350.0, 300.0))),
+            "the board itself stays undimmed"
+        );
     }
 
     /// Dragging the middle of the left edge must resize that edge only, on real
@@ -1789,7 +1839,7 @@ mod tests {
             [rgba.width() as usize, rgba.height() as usize],
             rgba.as_raw(),
         );
-        let texture = ctx.load_texture("source", color, TextureOptions::LINEAR);
+        let texture = ctx.load_texture("source", color, PIXEL_TEXTURE);
         let mut app = App::base(SkinLibrary::default(), None, false);
         app.image = Some(LoadedImage {
             rgba: Arc::new(rgba),
@@ -2613,7 +2663,7 @@ mod tests {
         // IEEE-754 ULP overshoot at 14 columns (`360.0_f32 / 14.0 * 14.0 > 360.0`).
         let rgba = image::RgbaImage::from_pixel(360, 270, image::Rgba([20, 20, 20, 255]));
         let color = egui::ColorImage::from_rgba_unmultiplied([360, 270], rgba.as_raw());
-        let texture = ctx.load_texture("source", color, TextureOptions::LINEAR);
+        let texture = ctx.load_texture("source", color, PIXEL_TEXTURE);
         let mut app = App::base(SkinLibrary::default(), None, false);
         app.image = Some(LoadedImage {
             rgba: Arc::new(rgba),

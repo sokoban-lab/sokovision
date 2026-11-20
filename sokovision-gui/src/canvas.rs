@@ -29,6 +29,22 @@ const GUIDE: Color32 = Color32::from_rgba_unmultiplied_const(245, 180, 60, 200);
 const HANDLE_EDGE: Color32 = Color32::from_rgb(90, 60, 10);
 /// XSB glyphs in the order of [`symbol_slot`], with `?` for an unresolved cell.
 const SYMBOLS: [&str; 8] = ["-", "#", ".", "$", "*", "@", "+", "?"];
+/// A quiet semantic palette: boxes warm, goals green, walls stone.
+const SYMBOL_COLORS: [Color32; SYMBOLS.len()] = [
+    Color32::from_rgba_unmultiplied_const(255, 245, 210, 255), // -
+    Color32::from_rgba_unmultiplied_const(176, 188, 202, 255), // #
+    Color32::from_rgba_unmultiplied_const(150, 230, 170, 255), // .
+    Color32::from_rgba_unmultiplied_const(255, 205, 110, 255), // $
+    Color32::from_rgba_unmultiplied_const(255, 225, 140, 255), // *
+    Color32::from_rgba_unmultiplied_const(255, 248, 230, 255), // @
+    Color32::from_rgba_unmultiplied_const(175, 240, 185, 255), // +
+    Color32::from_rgba_unmultiplied_const(255, 245, 210, 255), // ?
+];
+/// A sure floor tile is background, so its `-` is drawn without the outline.
+const FAINT_FLOOR: Color32 = Color32::from_rgba_unmultiplied_const(255, 245, 210, 85);
+const CONFIDENT: f32 = 0.9;
+/// 35% black outside the board: status bars and virtual keys recede.
+const VIGNETTE: Color32 = Color32::from_black_alpha(90);
 
 /// Index of a cell's glyph in [`SYMBOLS`].
 fn symbol_slot(cell: Cell) -> usize {
@@ -44,45 +60,46 @@ fn symbol_slot(cell: Cell) -> usize {
     }
 }
 
-/// Every glyph laid out once per frame. Laying text out per cell meant six
-/// layouts for each cell on the board, every repaint.
+/// Every glyph laid out once per frame, uncoloured so the fallback colour at
+/// draw time can be per cell. Laying text out per cell meant six layouts for
+/// every cell on the board, every repaint.
 struct SymbolGlyphs {
-    outline: [std::sync::Arc<egui::Galley>; SYMBOLS.len()],
-    fill: [std::sync::Arc<egui::Galley>; SYMBOLS.len()],
+    glyphs: [std::sync::Arc<egui::Galley>; SYMBOLS.len()],
 }
 
 impl SymbolGlyphs {
     fn new(painter: &egui::Painter, size: f32) -> Self {
         let font = FontId::monospace(size.clamp(9.0, 18.0));
-        let layout = |color| {
-            SYMBOLS.map(|symbol| painter.layout_no_wrap(symbol.to_owned(), font.clone(), color))
-        };
         Self {
-            outline: layout(Color32::from_black_alpha(210)),
-            fill: layout(Color32::from_rgb(255, 245, 210)),
+            glyphs: SYMBOLS.map(|symbol| {
+                painter.layout_no_wrap(symbol.to_owned(), font.clone(), Color32::PLACEHOLDER)
+            }),
         }
     }
 
     /// Ring the glyph in black before drawing it, otherwise a pale character
     /// disappears on a pale tile.
-    fn draw(&self, painter: &egui::Painter, rect: Rect, cell: Cell) {
+    fn draw(&self, painter: &egui::Painter, rect: Rect, cell: Cell, confidence: f32) {
         let index = symbol_slot(cell);
-        let center = rect.center();
+        let galley = &self.glyphs[index];
+        let top_left = rect.center() - galley.size() * 0.5;
+        if cell == Cell::Empty && confidence >= CONFIDENT {
+            painter.galley(top_left, galley.clone(), FAINT_FLOOR);
+            return;
+        }
         for offset in [
             vec2(-1.0, 0.0),
             vec2(1.0, 0.0),
             vec2(0.0, -1.0),
             vec2(0.0, 1.0),
         ] {
-            let galley = &self.outline[index];
             painter.galley(
-                center + offset - galley.size() * 0.5,
+                top_left + offset,
                 galley.clone(),
-                Color32::WHITE,
+                Color32::from_black_alpha(210),
             );
         }
-        let galley = &self.fill[index];
-        painter.galley(center - galley.size() * 0.5, galley.clone(), Color32::WHITE);
+        painter.galley(top_left, galley.clone(), SYMBOL_COLORS[index]);
     }
 }
 
@@ -146,6 +163,47 @@ impl View {
 fn draw_rubber_band(painter: &egui::Painter, band: Rect) {
     painter.rect_filled(band, 0.0, RUBBER_BAND_FILL);
     painter.rect_stroke(band, 0.0, Stroke::new(1.5, ACCENT), StrokeKind::Middle);
+}
+
+/// Dim everything in the screenshot outside the board. Four rectangles, since
+/// egui cannot paint one rectangle with a hole in it.
+fn draw_vignette(painter: &egui::Painter, image_rect: Rect, outline: Rect) {
+    for band in [
+        Rect::from_min_max(image_rect.min, pos2(image_rect.max.x, outline.min.y)),
+        Rect::from_min_max(pos2(image_rect.min.x, outline.max.y), image_rect.max),
+        Rect::from_min_max(
+            pos2(image_rect.min.x, outline.min.y),
+            pos2(outline.min.x, outline.max.y),
+        ),
+        Rect::from_min_max(
+            pos2(outline.max.x, outline.min.y),
+            pos2(image_rect.max.x, outline.max.y),
+        ),
+    ] {
+        painter.rect_filled(band, 0.0, VIGNETTE);
+    }
+}
+
+/// Grid lines drawn once each. Per-cell strokes painted every shared edge
+/// twice, so the seams grew a brighter, thicker band than the outer frame.
+fn draw_grid_lines(painter: &egui::Painter, grid: Grid, view: View) {
+    let outline = grid::outline_rect(&grid, view.image_rect, view.scale);
+    // Dark first, then light over it: every line gets the same two passes, so
+    // crossings do not depend on which line happened to be drawn last.
+    for stroke in [
+        Stroke::new(2.0, Color32::from_black_alpha(110)),
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 110)),
+    ] {
+        for column in 1..grid.columns {
+            let x = outline.min.x + grid.cell_width * view.scale * column as f32;
+            painter.vline(x, outline.y_range(), stroke);
+        }
+        for row in 1..grid.rows {
+            let y = outline.min.y + grid.cell_height * view.scale * row as f32;
+            painter.hline(outline.x_range(), y, stroke);
+        }
+        painter.rect_stroke(outline, 0.0, stroke, StrokeKind::Middle);
+    }
 }
 
 /// Draws the pixel dimensions of a dragged crop rectangle next to its top-left
@@ -291,6 +349,12 @@ impl App {
             }
             return;
         };
+
+        draw_vignette(
+            &painter,
+            view.image_rect,
+            grid::outline_rect(&grid, view.image_rect, view.scale),
+        );
 
         let hovered_handle = response
             .hover_pos()
@@ -502,6 +566,7 @@ impl App {
         let symbol_width = grid.cell_width * view.scale;
         let glyphs = (cells && symbol_width >= SYMBOL_MIN_SIZE)
             .then(|| SymbolGlyphs::new(painter, symbol_width * 0.42));
+        draw_grid_lines(painter, grid, view);
 
         for row in 0..grid.rows {
             for column in 0..grid.columns {
@@ -553,21 +618,6 @@ impl App {
                     );
                 }
 
-                // A dark backing stroke first, so the grid keeps its edge on
-                // light screenshots as well as dark ones.
-                painter.rect_stroke(
-                    rect,
-                    0.0,
-                    Stroke::new(2.0, Color32::from_black_alpha(110)),
-                    StrokeKind::Middle,
-                );
-                painter.rect_stroke(
-                    rect,
-                    0.0,
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 110)),
-                    StrokeKind::Middle,
-                );
-
                 if selected_here {
                     painter.rect_stroke(
                         rect,
@@ -593,7 +643,7 @@ impl App {
                 }
 
                 if let (Some(glyphs), Some(recognized)) = (&glyphs, recognized) {
-                    glyphs.draw(painter, rect, recognized.cell);
+                    glyphs.draw(painter, rect, recognized.cell, recognized.confidence);
                 }
             }
         }
