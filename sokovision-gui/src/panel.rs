@@ -56,8 +56,9 @@ impl App {
         ui: &mut egui::Ui,
         image_size: Option<(u32, u32)>,
     ) {
+        let mut sections = SectionState::default();
         if self.is_cropping_capture() {
-            section(ui, &tr!("screenshot"));
+            sections.heading(ui, &tr!("screenshot"));
             ui.small(tr!("capture_crop_hint"));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -74,7 +75,7 @@ impl App {
         // The mean of the per-cell scores: one glance tells you whether the run
         // is worth checking cell by cell.
         if let Some(confidence) = self.overall_confidence() {
-            section(ui, &tr!("overall_confidence"));
+            sections.heading(ui, &tr!("overall_confidence"));
             let text = format!("{:.1}%", confidence * 100.0);
             let color = confidence_color(confidence);
             ui.horizontal(|ui| {
@@ -102,12 +103,12 @@ impl App {
             ui.add_space(4.0);
         }
 
-        self.grid_section(ctx, ui, image_size);
-        self.paint_section(ui);
-        self.validation_section(ui);
+        self.grid_section(ctx, ui, image_size, &mut sections);
+        self.paint_section(ui, &mut sections);
+        self.validation_section(ui, &mut sections);
         self.warnings_section(ui);
-        self.export_section(ui);
-        self.learning_section(ui);
+        self.export_section(ui, &mut sections);
+        self.learning_section(ui, &mut sections);
         ui.add_space(2.0);
     }
 
@@ -116,8 +117,9 @@ impl App {
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         image_size: Option<(u32, u32)>,
+        sections: &mut SectionState,
     ) {
-        section(ui, &tr!("section_grid"));
+        sections.heading(ui, &tr!("section_grid"));
         // Detection and hand drawing alternate freely, so they stay two
         // actions instead of one control with a persistent state.
         ui.horizontal(|ui| {
@@ -174,8 +176,8 @@ impl App {
         ui.small(tr!("handles_hint"));
     }
 
-    fn paint_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, &tr!("section_paint"));
+    fn paint_section(&mut self, ui: &mut egui::Ui, sections: &mut SectionState) {
+        sections.heading(ui, &tr!("section_paint"));
         // A button centres its text, so labels of different lengths start at
         // different x. Split into a fixed symbol slot and a growing label so
         // both columns line up: the slot is as wide as the widest symbol.
@@ -291,11 +293,11 @@ impl App {
         }
     }
 
-    fn validation_section(&mut self, ui: &mut egui::Ui) {
+    fn validation_section(&mut self, ui: &mut egui::Ui, sections: &mut SectionState) {
         if self.result.is_none() {
             return;
         }
-        section(ui, &tr!("section_validation"));
+        sections.heading(ui, &tr!("section_validation"));
         match self.derived().problems.as_ref() {
             Ok(problems) if problems.is_empty() => {
                 ui.colored_label(
@@ -345,8 +347,8 @@ impl App {
         });
     }
 
-    fn export_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, &tr!("section_export"));
+    fn export_section(&mut self, ui: &mut egui::Ui, sections: &mut SectionState) {
+        sections.heading(ui, &tr!("section_export"));
         if ui
             .checkbox(&mut self.trim_export, tr!("trim_export"))
             .changed()
@@ -389,8 +391,8 @@ impl App {
             });
     }
 
-    fn learning_section(&mut self, ui: &mut egui::Ui) {
-        section(ui, &tr!("section_learning"));
+    fn learning_section(&mut self, ui: &mut egui::Ui, sections: &mut SectionState) {
+        sections.heading(ui, &tr!("section_learning"));
         ui.checkbox(&mut self.auto_learn, tr!("auto_learn"))
             .on_hover_text(tr!("auto_learn_tip"));
         if !self.auto_learn {
@@ -442,18 +444,29 @@ fn confidence_color(confidence: f32) -> Color32 {
     Color32::from(egui::ecolor::Hsva::new(hue, 0.72, 0.82, 1.0))
 }
 
-/// A compact section header with a hairline above it, so the panel can hold
-/// five sections without the headings eating the whole column. Text only: an
-/// icon here would fight the body for attention, and the muted colour plus the
-/// hairline already say "heading".
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(6.0);
-    ui.separator();
-    ui.add_space(2.0);
-    // Body size and muted: the headings are signposts, not content.
-    let color = ui.visuals().weak_text_color();
-    ui.label(RichText::new(title).strong().color(color));
-    ui.add_space(2.0);
+/// Tracks whether the panel has drawn a section heading yet, so the hairline
+/// only separates sections instead of leading the first one.
+#[derive(Default)]
+struct SectionState {
+    started: bool,
+}
+
+impl SectionState {
+    /// A compact section header. Text only: an icon here would fight the body
+    /// for attention, and the muted colour plus the hairline already say
+    /// "heading".
+    fn heading(&mut self, ui: &mut egui::Ui, title: &str) {
+        ui.add_space(6.0);
+        if self.started {
+            ui.separator();
+        }
+        self.started = true;
+        ui.add_space(2.0);
+        // Body size and muted: the headings are signposts, not content.
+        let color = ui.visuals().weak_text_color();
+        ui.label(RichText::new(title).strong().color(color));
+        ui.add_space(2.0);
+    }
 }
 
 /// What a stepper did this frame. `dragging` means the value is still under the
