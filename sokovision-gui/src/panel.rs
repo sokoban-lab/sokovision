@@ -33,6 +33,12 @@ impl App {
         egui::Panel::right("controls")
             .resizable(true)
             .default_size(PANEL_WIDTH)
+            // A little more air than the default side-panel frame: controls
+            // otherwise sit right against the window edge and the scrollbar.
+            .frame(
+                egui::Frame::side_top_panel(root_ui.style())
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
             .show(root_ui, |ui| {
                 // The warnings and the XSB preview together are taller than the
                 // panel on a short window, so the whole column scrolls instead
@@ -197,19 +203,15 @@ impl App {
                     let label = egui::Atom::from(cell_label(cell))
                         .atom_grow(true)
                         .atom_align(egui::Align2::LEFT_CENTER);
-                    let clicked = ui
-                        .allocate_ui_with_layout(
-                            vec2(column_width, row_height),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.add(
-                                    egui::Button::selectable(selected, (symbol, label))
-                                        .min_size(vec2(column_width, 20.0)),
-                                )
-                                .clicked()
-                            },
-                        )
-                        .inner;
+                    // `selectable` drops the frame when unselected, leaving bare
+                    // labels; an ordinary button keeps the palette a tidy block
+                    // of cards, with the chosen cell carrying the accent.
+                    let button = if selected {
+                        egui::Button::selectable(true, (symbol, label))
+                    } else {
+                        egui::Button::new((symbol, label))
+                    };
+                    let clicked = ui.add(button.min_size(vec2(column_width, 20.0))).clicked();
                     if clicked {
                         self.paint_cell = cell;
                     }
@@ -373,17 +375,17 @@ impl App {
             }
         });
 
-        let mut preview = self.derived().preview.clone();
+        // Borrow the cached preview instead of cloning it every frame; a label
+        // on a canvas also reads with more contrast than a disabled text field.
+        let preview = self.derived().preview.as_str();
         egui::ScrollArea::vertical()
             .id_salt("xsb_preview")
             .max_height(PREVIEW_HEIGHT)
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut preview)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .interactive(false),
-                );
+                egui::Frame::canvas(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.monospace(preview);
+                });
             });
     }
 
