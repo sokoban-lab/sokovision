@@ -2,7 +2,7 @@
 //!
 //! The crate is pure image processing: it takes pixels in and gives a board
 //! out. Screenshots, file dialogs and clipboards belong to the callers, which
-//! keeps `sokovision-core` usable from the CLI, the GUI and third-party code.
+//! keeps `sokovision-core` usable from the GUI and third-party code.
 //!
 //! ```no_run
 //! use sokovision_core::{RecognizeOptions, image::open, recognize};

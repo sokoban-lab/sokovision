@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["sokovision-core", "sokovision-cli", "sokovision-gui"]
+members = ["sokovision-core", "sokovision-gui"]
 
 [workspace.package]
 version = "0.1.1"

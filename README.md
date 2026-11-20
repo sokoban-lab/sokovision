@@ -19,17 +19,7 @@ Recognize [Sokoban] boards from screenshots and export them to [XSB] format.
 ### GUI
 
 ```sh
-cargo run --release -p sokovision-gui
-```
-
-### CLI
-
-```sh
-# Recognize a screenshot and print trimmed XSB to stdout
-cargo run --release -p sokovision-cli -- level.png --trim
-
-# Export structured JSON while loading and updating a skin library
-sokovision level.png --format json --skins skins.json --save-skins skins.json
+cargo run --release
 ```
 
 ### Library

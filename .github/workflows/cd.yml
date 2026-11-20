@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           version=$(cargo metadata --no-deps --locked --format-version 1 \
-            | jq -r '.packages[] | select(.name == "sokovision-cli") | .version')
+            | jq -r '.packages[] | select(.name == "sokovision-gui") | .version')
 
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             tag="$GITHUB_REF_NAME"
@@ -106,19 +106,12 @@ jobs:
           set -euo pipefail
           mkdir -p dist
 
-          for pkg in cli gui; do
-            if [[ "$pkg" == "cli" ]]; then
-              bin="sokovision.exe"
-            else
-              bin="sokovision-gui.exe"
-            fi
-            name="sokovision-${pkg}-${VERSION}-windows-x86_64"
-            stage="${RUNNER_TEMP:?}/${name}"
-            rm -rf "${stage}"
-            mkdir -p "${stage}"
-            cp "target/x86_64-pc-windows-msvc/release/${bin}" "${stage}/"
-            7z a -tzip "dist/${name}.zip" "${stage}" > /dev/null
-          done
+          name="sokovision-${VERSION}-windows-x86_64"
+          stage="${RUNNER_TEMP:?}/${name}"
+          rm -rf "${stage}"
+          mkdir -p "${stage}"
+          cp "target/x86_64-pc-windows-msvc/release/sokovision.exe" "${stage}/"
+          7z a -tzip "dist/${name}.zip" "${stage}" > /dev/null
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -182,20 +175,13 @@ jobs:
           set -euo pipefail
           mkdir -p dist
 
-          for pkg in cli gui; do
-            if [[ "$pkg" == "cli" ]]; then
-              bin="sokovision"
-            else
-              bin="sokovision-gui"
-            fi
-            name="sokovision-${pkg}-${VERSION}-linux-x86_64"
-            stage="${RUNNER_TEMP:?}/${name}"
-            rm -rf "${stage}"
-            mkdir -p "${stage}"
-            cp "target/x86_64-unknown-linux-gnu/release/${bin}" "${stage}/"
-            chmod +x "${stage}/${bin}"
-            tar -czf "dist/${name}.tar.gz" -C "${RUNNER_TEMP}" "${name}"
-          done
+          name="sokovision-${VERSION}-linux-x86_64"
+          stage="${RUNNER_TEMP:?}/${name}"
+          rm -rf "${stage}"
+          mkdir -p "${stage}"
+          cp "target/x86_64-unknown-linux-gnu/release/sokovision" "${stage}/"
+          chmod +x "${stage}/sokovision"
+          tar -czf "dist/${name}.tar.gz" -C "${RUNNER_TEMP}" "${name}"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -248,8 +234,8 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           assets=(dist/sokovision-*.zip dist/sokovision-*.tar.gz)
-          if [[ "${#assets[@]}" -ne 4 ]]; then
-            echo "expected 4 release archives, found ${#assets[@]}: ${assets[*]}" >&2
+          if [[ "${#assets[@]}" -ne 2 ]]; then
+            echo "expected 2 release archives, found ${#assets[@]}: ${assets[*]}" >&2
             exit 1
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
