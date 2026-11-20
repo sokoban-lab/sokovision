@@ -3791,7 +3791,7 @@ dependencies = [
 
 [[package]]
 name = "sokovision-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "image",
  "serde",
@@ -3801,7 +3801,7 @@ dependencies = [
 
 [[package]]
 name = "sokovision-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arboard",
  "dirs",
