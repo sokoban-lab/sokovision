@@ -1139,7 +1139,7 @@ impl App {
     }
 
     /// Handles global and canvas keyboard shortcuts (`Ctrl+Z`, `Ctrl+Y` /
-    /// `Ctrl+Shift+Z`, `Esc`, `1`–`7` / XSB characters, and arrow keys).
+    /// `Ctrl+Shift+Z`, `Esc`, and arrow keys).
     pub fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         if self.capture_crop.is_some() {
             if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -1166,48 +1166,6 @@ impl App {
             return;
         }
         if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-
-        const NUM_KEYS: [egui::Key; 7] = [
-            egui::Key::Num1,
-            egui::Key::Num2,
-            egui::Key::Num3,
-            egui::Key::Num4,
-            egui::Key::Num5,
-            egui::Key::Num6,
-            egui::Key::Num7,
-        ];
-        for (index, key) in NUM_KEYS.into_iter().enumerate() {
-            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, key)) {
-                self.paint_cell = crate::panel::CELL_CHOICES[index].0;
-                return;
-            }
-        }
-
-        let picked_symbol = ctx.input_mut(|input| {
-            if input.modifiers.ctrl || input.modifiers.command || input.modifiers.alt {
-                return None;
-            }
-            let mut found = None;
-            input.events.retain(|event| {
-                if found.is_none()
-                    && let egui::Event::Text(text) = event
-                    && text.chars().count() == 1
-                    && let Some(ch) = text.chars().next()
-                    && let Some(&(cell, _)) = crate::panel::CELL_CHOICES
-                        .iter()
-                        .find(|(_, symbol)| *symbol == ch)
-                {
-                    found = Some(cell);
-                    return false;
-                }
-                true
-            });
-            found
-        });
-        if let Some(cell) = picked_symbol {
-            self.paint_cell = cell;
             return;
         }
 
@@ -2542,7 +2500,7 @@ mod tests {
     }
 
     #[test]
-    fn shortcuts_pick_palette_cells_and_nudge_grid_origin() {
+    fn shift_arrow_nudges_grid_origin() {
         let ctx = egui::Context::default();
         let mut app = app_with_flat_image(&ctx);
         app.create_grid_in(&ctx, PixelRect::new(20, 10, 240, 200));
@@ -2550,39 +2508,22 @@ mod tests {
         app.history.clear();
         let before = app.grid_edit.expect("grid");
 
-        let send_events = |app: &mut App, time: f64, events: Vec<egui::Event>| {
-            ctx.run_ui(input_at(time, events), |_| app.handle_shortcuts(&ctx))
-                .textures_delta
-                .clear();
-        };
+        ctx.run_ui(
+            input_at(
+                0.1,
+                vec![egui::Event::Key {
+                    key: egui::Key::ArrowRight,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::SHIFT,
+                }],
+            ),
+            |_| app.handle_shortcuts(&ctx),
+        )
+        .textures_delta
+        .clear();
 
-        send_events(
-            &mut app,
-            0.1,
-            vec![egui::Event::Key {
-                key: egui::Key::Num3,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
-        assert_eq!(app.paint_cell, Cell::Goal);
-
-        send_events(&mut app, 0.2, vec![egui::Event::Text("*".to_owned())]);
-        assert_eq!(app.paint_cell, Cell::BoxOnGoal);
-
-        send_events(
-            &mut app,
-            0.3,
-            vec![egui::Event::Key {
-                key: egui::Key::ArrowRight,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::SHIFT,
-            }],
-        );
         let nudged = app.grid_edit.expect("grid");
         assert!((nudged.origin_x - (before.origin_x + 5.0)).abs() < 1e-4);
         assert!(app.grid_settle_at.is_some());
